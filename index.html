@@ -1,0 +1,501 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<style>  
+    div.padded {  
+      padding-top: 0px;  
+      padding-right: 100px;  
+      padding-bottom: 0.25in;  
+      padding-left: 100px;  
+    }  
+
+    table.special {
+        font-family: arial, sans-serif;
+        border-collapse: collapse;
+        width: 100%;
+    }
+
+    td, th {
+        border: 1px solid #dddddd;
+        text-align: left;
+        padding: 8px;
+    }
+
+    tr:nth-child(even) {
+        background-color: #dddddd;
+    }
+
+    a {
+        text-decoration: none;
+        color: #1A8DE7;
+    }
+</style> 
+<title>Joseph Kraut  |  CS 194-26</title>
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<link rel="stylesheet" type="text/css" href="style.css" media="screen" />
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({tex2jax: {inlineMath: [['$','$'], ['\\(','\\)']]}});
+</script>
+<script type="text/javascript" async src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.7/latest.js?config=TeX-MML-AM_CHTML">
+</script>
+</head>
+<body>
+<br />
+<h1 align="middle">Project 1: Colorizing the Prokudin-Gorskii Photo Collection</h1>
+    <h2 align="middle">Joseph Kraut</h2>
+    <div class="padded">
+        <p>
+            In this project, I built a library to colorize images in which the three channels (BGR) are stacked on top of each other.
+            The purpose of this project was to color the Prokudin-Gorskii photo collection in which grayscale images for each of the
+            three channels were taken. The task of colorizing these images comes down to efficiently searching for an alignment across
+            the three channels and designing metrics for what constitutes a good alignment.
+        </p>
+    </div>
+    <div class="padded">
+        <h2>Approach</h2>
+        <h3>Image Alignment Search</h3>
+        <p>
+            The first core part of this project was to search over different channel displacements to find the
+            best way to align channels. The problem is essentially; given an alignment metric $f(channel_1,
+            channel_2)$, find the displacement $$\underset{i, j}{\operatorname{argmax}} f(D(channel_1, i, j), channel_2)$$
+            where $D$ is an operator that displaces an image $x$ by $(i, j)$.
+        </p>
+        <p>
+            In implementation, if displacing the center of an image downward and left (for example), I also crop the 
+            top and right borders by the respective displacement amounts. This avoids having to fill in the image
+            with dummy values to maintain size. Because most of the alignment metrics I implemented assume images
+            of the same size, I center crop the reference channel ($channel_2$ in the equation above) to the size of
+            the displaced image.
+        </p>
+        <h4>Brute Force Alignment</h4>
+        <p>
+            The first method I implemented to search over displacements was a brute force computation over some
+            window, usually taken to be [-15, 15]. That is, we exhaustively search over $(i, j) \in \{-15, \ldots, 15\}^2$.
+            This method is very slow and for the larger .tif files, it takes multiple minutes to complete as
+            I try $900$ separate alignments and evaluate a metric for each.
+        </p>
+        <h4>Image Pyramid Alignment</h4>
+        <p>
+            To enable faster search, I implemented a search that relies on image pyramids. In specific, the alignment
+            follows a recursive procedure; the base case of which is a brute-force search in a 4x4 window that returns
+            the optimal $(i, j)$. The recursive step is as follows:
+            <ol>
+                <li>
+                    Create a downsized copy of the image (with anti-aliasing) by scaling each dimension by some $\alpha$
+                    (I used $\alpha = 0.5$ for most of my experiments).
+                </li>
+                <li>
+                    Recursively call the image pyramid search on the downsized image, which returns an optimal 
+                    $(i_{downsample}, j_{downsample})$ for the downsized image.
+                </li>
+                <li>
+                    This is where the efficiency comes in. I use the values $(i_{downsample}, j_{downsample})$ to
+                    specify a region of brute force search in the original image size. Specifically, the range
+                    is $\frac{1}{\alpha} * [i_{downsample} - 1, i_{downsample} + 1] \times \frac{1}{\alpha} * [j_{downsample} - 1, 
+                    j_{downsample} + 1]$. For $\alpha = 0.5$, this search is only over 25 possible displacements. If
+                    we have $n$ levels in the image pyramid then the total number of displacements evaluated is 
+                    $$16 + 25(n - 1)$$ which is low compared to 900 for reasonable $n$. 
+                </li>
+                <li>
+                    Return this max displacement to the parent recursive call. 
+                </li>
+            </ol>
+            It is obvious that this method is faster; for $n = 2$ we have only 41 displacements searched. As well,
+            with $n = 2, alpha = 0.5$, each pixel in the second pyramid level is effectively $4$ first level pixels
+            interpolated together, so the effective search radius at the second (base) level is $\{-16, \ldots 16\}^2$,
+            larger than the brute-force search radius. One downside to this approach is that it is not guaranteed to
+            be optimal in the effective window (a property that brute-force has), because we lose information in
+            anti-aliasing and downsampling that may affect the alignment metric's score in the recursive call. 
+        </p>
+
+        <h3>Alignment Metrics</h3>
+        <p>
+            The description of alignment search above references an alignment metric $f(channel_1, channel_2)$.
+            I implemented a few alignment metrics, described below.
+        </p>
+        <h4>Sum of Squared Differences (SSD)</h4>
+        <p>
+            The first alignment metric I implemented was the sum of squared differences
+            $$f(channel_1, channel_2) = ||channel_1 - channel_2||_2^2$$
+            This takes the elementwise difference between channel values and sums them up. It is a simple heuristic
+            and performs reasonably well on some images. The success and failure cases are below
+        </p>
+        <h4 align="middle">Success Cases</h5>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/ssd_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (12, 5), G: (7, 3)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/ssd_emir.png" width="300px" />
+                        <figcaption align="middle">R: (220, 33), G: (99, 17)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4 align="middle">Failure Cases</h4>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/ssd_cathedral.png" width="300px" />
+                        <figcaption align="middle">R: (222, -31), G: (139, -13)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/ssd_castle.png" width="300px" />
+                        <figcaption align="middle">R: (190, 11), G: (134, 9)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4>Normalized Cross-Correlation (NCC)</h4>
+        <p>
+            The second alignment metric I implemented was normalized cross-correlation between the images (represented as flat vectors).
+            This alignment metric is defined as
+            $$f(channel_1, channel_2) = \left\langle \frac{channel_1}{||channel_1||_2}, \frac{channel_2}{||channel_2||_2}\right\rangle$$
+            Intuitively, this is maximized when the largest values of channel_1 and channel_2 occur in the same indices. This is also a 
+            simple metric and sees similar results to SSD visualized below.
+        </p>
+        <h4 align="middle">Success Cases</h5>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/ncc_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (13, 5), G: (7, 3)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/ncc_icon.png" width="300px" />
+                        <figcaption align="middle">R: (179, 45), G: (83, 33)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4 align="middle">Failure Cases</h4>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/ncc_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (29, 73), G: (-12, 0)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/ncc_church.png" width="300px" />
+                        <figcaption align="middle">R: (219, 0), G: (177, -1)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4>Sobel Edge Detector Metric (Bells & Whistles)</h4>
+        <p>
+            The third alignment metric I used levereaged the <a href="https://en.wikipedia.org/wiki/Sobel_operator">sobel operator</a>
+            for edge detection. Specifically, the Sobel operator convolves two kernels that estimate directional derivatives in the 
+            $x$ and $y$ pixel directions and outputs an image where each pixel is the magnitude of the gradient $\sqrt{(G_x^2 + 
+            G_y^2)}$. These pixel gradient magnitudes are highest at edges where pixel values change rapidly from, for example, 
+            foreground to background colors.
+        </p>
+        <p>
+            While the sobel operator will pre-process a channel, we still need a way to compare the channels for alignment. For
+            this I used both normalized cross correlation and sum of squared differences. So the relevant alignment functions are
+            $$f_{\text{sobel_ssd}}(channel_1, channel_2) = ||\text{sobel}(channel_1) - \text{sobel}(channel_2)||_2^2$$
+            $$f_{\text{sobel_ncc}}(channel_1, channel_2) = \left\langle \frac{\text{sobel}(channel_1)}{||\text{sobel}(channel_1)||_2},
+            \frac{\text{sobel}(channel_2)}{||\text{sobel}(channel_2)||_2}\right\rangle$$
+        </p>
+        <p>
+            The sobel_ssd implementation seemed to produce better results as visualized below
+        </p>
+        <h4 align="middle">Sobel SSD Results</h4>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/sobel-ssd_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (6, 2), G: (-6, 0)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ssd_castle.png" width="300px" />
+                        <figcaption align="middle">R: (179, 45), G: (83, 33)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ssd_church.png" width="300px" />
+                        <figcaption align="middle">R: (206, -3), G: (66, -9)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ssd_emir.png" width="300px" />
+                        <figcaption align="middle">R: (222, 33), G: (158, 15)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4 align="middle">Sobel NCC Results</h4>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/sobel-ncc_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (-13, 7), G: (-3, -9)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ncc_castle.png" width="300px" />
+                        <figcaption align="middle">R: (-70, 48), G: (-121, -79)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ncc_church.png" width="300px" />
+                        <figcaption align="middle">R: (-69, -72), G: (-161, -131)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sobel-ncc_emir.png" width="300px" />
+                        <figcaption align="middle">R: (-38, -50), G: (-219, -128)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4>Canny Edge Detector Metric (Bells & Whistles)</h4>
+        <p>
+            After sobel edge detection, I implemented a similar method using the 
+            <a href="https://en.wikipedia.org/wiki/Canny_edge_detector">Canny edge detector</a>. The Canny
+            edge detector makes the same initial steps as the sobel edge detector, but takes further steps to
+            remove noisy edges from e.g. color variation. First, the canny edge detector performs non-max supression
+            on the pixels; removing any edge pixels whose gradient value isn't larger than the gradients of the edge
+            pixels in the positive and negative gradient directions. Then, a double filter is applied to bin the edge
+            pixels into groups; edge pixels with graidents below the minimum filter value are removed from the list of 
+            edge pixels, and edge pixels above the maximum filter value are finalized as edge pixels. The edge pixels
+            with gradient magnitudes between the two filter bands are kept for the last step; in this step only the
+            edge pixel candidates that are connected (in an 8x8 region) to an already finalized edge pixel are kept,
+            the others are assumed to be noisy edge pixels and are dropped.
+        </p>
+        <p>
+            The Canny edge detector in scikit-image returns a binary vector corresponding to whether each pixel is an
+            edge pixel. To implement an optimizable metric, I counted the number of binary values that agreed between
+            channels. Formally, if $\text{canny}(img)$ returns a binary vector, the alignment metric is
+            $$f_{\text{canny}}(channel_1, channel_2) = \text{popcount}(\neg(\text{canny}(channel_1) \oplus \text{canny}(channel_2))))$$
+        </p>
+        <p>
+            The results of this alignment metric are below.
+        </p>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/canny_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (6, 4), G: (-5, 4)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/canny_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (12, 3), G: (6, 3)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/canny_castle.png" width="300px" />
+                        <figcaption align="middle">R: (0, 0), G: (60, 6)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/canny_church.png" width="300px" />
+                        <figcaption align="middle">R: (146, 18), G: (0, 0)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <p>
+            As you can see, despite being widely regarded as a better image detector than sobel, my use of Canny
+            doesn't align images as well as sobel.
+        </p>
+        <h4>SIFT Feature Matching Metric (Bells & Whistles)</h4>
+        <p>
+            The next image alignment criterion is based on <a href="https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf">SIFT</a> features.
+            SIFT extracts keypoints and keypoint descriptors (although in this implmenetation I only use the keypoints) from images
+            that are robust to scale, illumination, rotation, etc changes in the image. At a high level it does so constructing an image
+            pyramid and progressively blurring each level. Then, SIFT takes the difference of these levels and finds local maxima across
+            image neighborhoods and pyramid neighborhoods as potential keypoints. A series of checks is then performed to filter and refine
+            these mined features.
+        </p>
+        <p>
+            To turn these features into an alignment metric ($f(channel_1, channel_2)$), the following process is followed:
+            <ol>
+                <li>
+                    SIFT keypoints are computed for channel_1 and channel_2.
+                </li>
+                <li>
+                    A KDTree is constructed from the keypoint locations in the reference channel (assume this is channel_2 for simplicity).
+                </li>
+                <li>
+                    For each keypoint location in channel_1, the KDTree is queried for the nearest neighbor. The summed distance between
+                    keypoints in channel_1 and their nearest neighbor in channel_2 is returned. That is
+                    $$f(channel_1, channel_2) = \sum_{i=1}^n ||\text{SIFT}(channel_1)_i - \text{KDTree.query}(\text{SIFT}(channel_2))||_2$$
+                </li>
+            </ol>
+        </p>
+        <p>
+            The results of this metric are below.
+        </p>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/sift_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (13, 6), G: (6, 5)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sift_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (6, 5), G: (-5, 5)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sift_castle.png" width="300px" />
+                        <figcaption align="middle">R: (192, 8), G: (64, 0)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/sift_church.png" width="300px" />
+                        <figcaption align="middle">R: (217, 68), G: (94, 52)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h4>Latent Space Matching Metric (Bells & Whistles)</h4>
+        <p>
+            The final alignment metric I tried to implement was one which measures distances between latent vectors
+            of the channels after passing them through the first $n$ layers of a deep neural network. The network used
+            was <a href="https://arxiv.org/abs/1911.09070">EfficientDet</a> which is the current state of the art for
+            mAP on the COCO dataset. This network is built on an <a href="https://arxiv.org/abs/1905.11946">EfficientNet</a>
+            backbone that can be thought of as an image featurizer. The intuition behind this approach is that EfficientDet is
+            trained for object detection, so its latent features must encode some object localization information. Ideally,
+            channel alignment can be achieved by matching the location of objects in an image. 
+        </p>
+        <p>
+            The metric built was simply to take the squared distance between latent representations after passing the image
+            through the EfficientNet backbone, of a pretrained EfficientDet model. That is 
+            $$f_{\text{network_latent}}(channel_1, channel_2) = ||F(channel_1) - F(channel_2)||_2$$
+            where $F(x)$ represents a forward pass through the EfficientNet backbone. The results of this are abysmal as shown
+            below. This makes sense however, as there is no training signal that forces multiple channels to be close in L2 norm
+            during the EfficientDet training procedure; so there is no reason for their latent representations to share an L2 norm.
+        </p>
+        <p>
+            A few experiments that I think would improve the quality of the alignment metric are as follows:
+            <ol>
+                <li>
+                    Better comparison of latent space metrics, i.e. not just $||\cdot||_2$.
+                </li>
+                <li>
+                    Aligning images based on the actual predicted location of objects in the image by EfficientDet. That is,
+                    treat the predicted bounding boxes as features and align them like in the SIFT approach. This makes better
+                    use of the actual purpose of a pre-trained model like EfficientDet and could result in near perfect alignment.
+                </li>
+                <li>
+                    Using a model with a latent space better trained for cross-channel comparison. One such expample might be a
+                    <a href="https://arxiv.org/abs/1906.05849">Contrastive Multiview Coding</a> model; in which the optimization problem 
+                    often includes maximizing similarity across image channels. 
+                </li>
+            </ol>
+            Unfortunately, I ran out of time working on this part and had to settle for my inital, naive experiment.
+        </p>
+        <p>
+            One result from this approach is below (I only use one because it takes quite a while to complete)
+        </p>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/ml_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (-129, -69), G: (199, -54)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h2>Results</h2>
+        <p>
+            The following were all aligned via the SIFT metric. Some results are better than others, noticably, the scenes
+            with plants/fruit in them seem to be worse. This is likely because little plants and fruit may be flagged as
+            keypoints and end up controlling the optimization when the more important keypoints to match are on bigger,
+            less frequent objects.
+        </p>
+        <h3>Given Images</h3>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/final_castle.png" width="300px" />
+                        <figcaption align="middle">R: (192, 8), G: (64, 0)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_cathedral.png" width="300px" />
+                        <figcaption align="middle">R: (7, 0), G: (10, 4)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_emir.png" width="300px" />
+                        <figcaption align="middle">R: (202, 45), G: (90, 45)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_harvesters.png" width="300px" />
+                        <figcaption align="middle">R: (209, 20), G: (122, 30)</figcaption>
+                    </td>
+                </tr>
+                <tr>
+                    <td align="middle">
+                        <img src="images/final_icon.png" width="300px" />
+                        <figcaption align="middle">R: (179, 45), G: (83, 33)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_lady.png" width="300px" />
+                        <figcaption align="middle">R: (210, -34), G: (126, 18)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_melons.png" width="300px" />
+                        <figcaption align="middle">R: (202, -115), G: (164, 17)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_monastery.png" width="300px" />
+                        <figcaption align="middle">R: (6, 5), G: (-5, 5)</figcaption>
+                    </td>
+                </tr>
+                <tr>
+                    <td align="middle">
+                        <img src="images/final_church.png" width="300px" />
+                        <figcaption align="middle">R: (217, 68), G: (94, 52)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_portrait.png" width="300px" />
+                        <figcaption align="middle">R: (190, 66), G: (155, 56)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_three.png" width="300px" />
+                        <figcaption align="middle">R: (210, 20), G: (108, 28)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_tobolsk.png" width="300px" />
+                        <figcaption align="middle">R: (13, 6), G: (6, 5)</figcaption>
+                    </td>
+                </tr>
+                <tr>
+                    <td align="middle">
+                        <img src="images/final_train.png" width="300px" />
+                        <figcaption align="middle">R: (182, 71), G: (94, 6)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_workshop.png" width="300px" />
+                        <figcaption align="middle">R: (215, -23), G: (106, -1)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div>
+        <h3>Selected Extra Images</h3>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                        <img src="images/final_fairy.png" width="300px" />
+                        <figcaption align="middle">R: (5, 7), G: (1, 2)</caption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_house.png" width="300px" />
+                        <figcaption align="middle">R: (9, -1), G: (4, 4)</figcaption>
+                    </td>
+                    <td align="middle">
+                        <img src="images/final_water.png" width="300px" />
+                        <figcaption align="middle">R: (2, -11), G: (-3, 0)</figcaption>
+                    </td>
+                </tr>
+            </table>
+        </div> 
+    </div>
+</body>
+</html>
